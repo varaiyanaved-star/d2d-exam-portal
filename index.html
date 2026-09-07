@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>D2D Entrance Exam Portal</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
+
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    // =========================================================================
+    // ⚙️ AUTH CONFIGURATION KEYS
+    // =========================================================================
+    const ADMIN_EMAIL = 'fizavaraiya@gmail.com'.toLowerCase();
+    const EMAILJS_PUBLIC_KEY  = 'ia2zoR2_x3PWxqT2Q';     
+    const EMAILJS_SERVICE_ID  = 'service_xo69pzg';     
+    const EMAILJS_TEMPLATE_ID = 'template_5totzc2';      
+    const SUPABASE_URL = 'https://padfkukxtxvzaesvlgjx.supabase.co';     
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBhZGZrdWt4dHh2emFlc3ZsZ2p4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg3NzQ4MzUsImV4cCI6MjEwNDM1MDgzNX0._LOh3gQV5MjikHDsZ2kLfFXpNASJZWIRn5w24OkTiQI';    
+  
+    // =========================================================================
+
+    const supabase = (SUPABASE_URL && SUPABASE_URL.startsWith('http')) 
+      ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) 
+      : null;
+
+    function App() {
+      const [view, setView] = useState('auth'); // 'auth' | 'admin_upload' | 'dashboard' | 'quiz' | 'result'
+      const [authMode, setAuthMode] = useState('login'); 
+      const [step, setStep] = useState('input'); 
+      const [fullName, setFullName] = useState('');
+      const [email, setEmail] = useState('');
+      const [otp, setOtp] = useState(['', '', '', '', '', '']);
+      const [generatedOtp, setGeneratedOtp] = useState('');
+      const [timer, setTimer] = useState(30);
+      const [canResend, setCanResend] = useState(false);
+      const [currentUser, setCurrentUser] = useState(null);
+      const [authMsg, setAuthMsg] = useState('');
+      const [loading, setLoading] = useState(false);
+
+      // Questions are completely empty by default — fetched strictly from Supabase
+      const [questions, setQuestions] = useState([]);
+      const [currentIndex, setCurrentIndex] = useState(0);
+      const [userAnswers, setUserAnswers] = useState({});
+      const [studentScores, setStudentScores] = useState([]);
+      const [adminMsg, setAdminMsg] = useState('');
+      const [examTimeLeft, setExamTimeLeft] = useState(0);
+
+      const inputRefs = useRef([]);
+      const userAnswersRef = useRef(userAnswers);
+      userAnswersRef.current = userAnswers;
+
+      // OTP Countdown
+      useEffect(() => {
+        let interval = null;
+        if (step === 'otp' && timer > 0) {
+          interval = setInterval(() => setTimer(t => t - 1), 1000);
+        } else if (timer === 0) {
+          setCanResend(true);
+        }
+        return () => clearInterval(interval);
+      }, [step, timer]);
+
+      // Exam Timer Countdown
+      useEffect(() => {
+        let interval = null;
+        if (view === 'quiz' && examTimeLeft > 0) {
+          interval = setInterval(() => {
+            setExamTimeLeft(prev => {
+              if (prev <= 1) {
+                clearInterval(interval);
+                handleFinishTest(true);
+                return 0;
+              }
+              return prev - 1;
+            });
+          }, 1000);
+        }
+        return () => clearInterval(interval);
+      }, [view, examTimeLeft]);
+
+      const formatTime = (totalSec) => {
+        const hrs = Math.floor(totalSec / 3600);
+        const mins = Math.floor((totalSec % 3600) / 60);
+        const secs = totalSec % 60;
+        const pad = (n) => String(n).padStart(2, '0');
+        return hrs > 0 ? `${pad(hrs)}:${pad(mins)}:${pad(secs)}` : `${pad(mins)}:${pad(secs)}`;
+      };
+
+      // Pulls active exam directly from Supabase
+      const fetchQuestionsFromDB = async () => {
+        if (!supabase) return [];
+        const { data, error } = await supabase
+          .from('active_quiz')
+          .select('*')
+          .order('id', { ascending: true });
+
+        if (error || !data || data.length === 0) return [];
+
+        return data.map((row, idx) => ({
+          id: idx + 1,
+          question: row.question,
+          options: { A: row.option_a, B: row.option_b, C: row.option_c, D: row.option_d },
+          answer: row.answer
+        }));
+      };
+
+      const loadStudentHistory = async (studentEmail) => {
+        if (!supabase) return;
+        const { data, error } = await supabase
+          .from('student_scores')
+          .select('*')
+          .eq('student_email', studentEmail)
+          .order('attempted_at', { ascending: false });
+
+        if (!error && data) setStudentScores(data);
+      };
+
+      const handleSendOtp = async (e) => {
+        e?.preventDefault();
+        setAuthMsg('');
+
+        if (authMode === 'register' && !fullName.trim()) {
+          setAuthMsg('Please enter your full name');
+          return;
+        }
+        if (!email.trim() || !email.includes('@')) {
+          setAuthMsg('Please enter a valid Gmail address');
+          return;
+        }
+
+        const code = Math.floor(100000 + Math.random() * 900000).toString();
+        setGeneratedOtp(code);
+        setLoading(true);
+
+        try {
+          emailjs.init(EMAILJS_PUBLIC_KEY);
+          await emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, {
+            to_email: email.trim(),
+            otp_code: code,
+          });
+          setStep('otp');
+          setTimer(30);
+          setCanResend(false);
+          setOtp(['', '', '', '', '', '']);
+          setTimeout(() => inputRefs.current[0]?.focus(), 150);
+        } catch (err) {
+          setAuthMsg('Failed to send email. Verify your EmailJS keys.');
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const handleVerifyOtp = async (e) => {
+        e.preventDefault();
+        if (otp.join('') !== generatedOtp) {
+          setAuthMsg('Invalid OTP code. Try again.');
+          return;
+        }
+
+        const cleanEmail = email.trim().toLowerCase();
+        let studentName = fullName.trim();
+
+        if (supabase) {
+          try {
+            const { data: record } = await supabase
+              .from('students')
+              .select('full_name')
+              .eq('email', cleanEmail)
+              .maybeSingle();
+
+            if (record && record.full_name) {
+              studentName = record.full_name;
+            } else if (authMode === 'register' && studentName) {
+              await supabase.from('students').upsert([{ email: cleanEmail, full_name: studentName }]);
+            } else {
+              studentName = cleanEmail.split('@')[0];
+            }
+          } catch (err) {
+            console.error(err);
+          }
+        }
+
+        const loggedInUser = {
+          name: studentName || cleanEmail.split('@')[0],
+          email: cleanEmail,
+          isAdmin: cleanEmail === ADMIN_EMAIL
+        };
+
+        setCurrentUser(loggedInUser);
+        await loadStudentHistory(cleanEmail);
+
+        // Routing: Admin lands on Upload page; Students fetch test and go to Dashboard
+        if (loggedInUser.isAdmin) {
+          const loaded = await fetchQuestionsFromDB();
+          setQuestions(loaded);
+          setView('admin_upload');
+        } else {
+          setLoading(true);
+          const loaded = await fetchQuestionsFromDB();
+          setLoading(false);
+
+          if (loaded.length === 0) {
+            setAuthMsg('No examination has been published yet. Please contact your instructor.');
+            return;
+          }
+          setQuestions(loaded);
+          setView('dashboard');
+        }
+      };
+
+      // Admin CSV file upload straight into Supabase
+      const handleAdminCSVUpload = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        setAdminMsg('Reading and syncing CSV with Supabase...');
+
+        Papa.parse(file, {
+          header: true,
+          skipEmptyLines: true,
+          complete: async (results) => {
+            const parsedList = [];
+            const rowsToInsert = [];
+
+            results.data.forEach((row, i) => {
+              const q = row.Question || row.question;
+              const a = row['Option A'] || row.A;
+              const b = row['Option B'] || row.B;
+              const c = row['Option C'] || row.C;
+              const d = row['Option D'] || row.D;
+              const ans = String(row.Answer || row.answer || '').trim();
+
+              if (q && a && b && c && d && ans) {
+                const formattedAns = ans.toUpperCase().replace('OPTION ', '').trim();
+                parsedList.push({
+                  id: i + 1,
+                  question: q,
+                  options: { A: a, B: b, C: c, D: d },
+                  answer: formattedAns
+                });
+                rowsToInsert.push({
+                  question: q,
+                  option_a: String(a),
+                  option_b: String(b),
+                  option_c: String(c),
+                  option_d: String(d),
+                  answer: formattedAns
+                });
+              }
+            });
+
+            if (rowsToInsert.length === 0) {
+              setAdminMsg('Error: Invalid CSV format. Make sure headers are Question, Option A, Option B, Option C, Option D, Answer');
+              return;
+            }
+
+            if (supabase) {
+              // Delete old test and insert new test
+              await supabase.from('active_quiz').delete().neq('id', 0);
+              const { error } = await supabase.from('active_quiz').insert(rowsToInsert);
+              if (error) {
+                setAdminMsg('Supabase upload failed: ' + error.message);
+                return;
+              }
+            }
+
+            setQuestions(parsedList);
+            setAdminMsg(`Success! Published ${parsedList.length} questions to database. Timer set to ${parsedList.length * 1.5} minutes.`);
+          }
+        });
+      };
+
+      const startExam = () => {
+        setUserAnswers({});
+        setCurrentIndex(0);
+        const totalMinutes = questions.length * 1.5;
+        setExamTimeLeft(Math.round(totalMinutes * 60));
+        setView('quiz');
+      };
+
+      const handleFinishTest = async (isAutoSubmit = false) => {
+        const answers = isAutoSubmit ? userAnswersRef.current : userAnswers;
+        let score = 0;
+        questions.forEach((q, idx) => {
+          if (answers[idx] === q.answer) score++;
+        });
+
+        const percentage = Number(((score / questions.length) * 100).toFixed(1));
+
+        if (supabase && currentUser) {
+          try {
+            await supabase.from('student_scores').insert([{
+              student_email: currentUser.email,
+              score: score,
+              total_questions: questions.length,
+              percentage: percentage
+            }]);
+            await loadStudentHistory(currentUser.email);
+          } catch (err) {
+            console.error(err);
+          }
+        }
+
+        if (isAutoSubmit) {
+          alert("Time's up! Your exam has been automatically submitted.");
+        }
+
+        setView('result');
+      };
+
+      return (
+        <div className="max-w-4xl mx-auto p-4 sm:p-6 min-h-screen flex flex-col justify-center">
+
+          {currentUser && (
+            <div className="flex justify-between items-center bg-slate-900 border border-slate-800 p-4 rounded-2xl mb-6">
+              <div>
+                <p className="text-xs text-slate-400">{currentUser.isAdmin ? '👑 Authorized Instructor' : '🎓 Student'}</p>
+                <p className="text-sm font-bold text-white">{currentUser.name} <span className="text-xs text-indigo-400 font-mono">({currentUser.email})</span></p>
+              </div>
+              <div className="flex gap-2">
+                {currentUser.isAdmin && view !== 'admin_upload' && (
+                  <button
+                    onClick={() => setView('admin_upload')}
+                    className="text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg"
+                  >
+                    Upload Bank
+                  </button>
+                )}
+                <button
+                  onClick={() => { setView('auth'); setStep('input'); setCurrentUser(null); }}
+                  className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg border border-slate-700"
+                >
+                  Sign Out
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* SCREEN 1: LOGIN / REGISTER VIA OTP */}
+          {view === 'auth' && (
+            <div className="max-w-md mx-auto w-full bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-2xl">
+              <div className="text-center mb-6">
+                <div className="w-12 h-12 bg-indigo-600 rounded-xl flex items-center justify-center mx-auto text-2xl mb-2 font-bold">
+                  🎓
+                </div>
+                <h2 className="text-2xl font-bold text-white">D2D Exam Portal</h2>
+                <p className="text-xs text-slate-400 mt-1">Student & Admin Access via Email OTP</p>
+              </div>
+
+              {step === 'input' && (
+                <div className="flex bg-slate-800 p-1 rounded-xl mb-5">
+                  <button
+                    onClick={() => { setAuthMode('login'); setAuthMsg(''); }}
+                    className={`flex-1 py-2 text-xs font-semibold rounded-lg ${authMode === 'login' ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}
+                  >
+                    Sign In
+                  </button>
+                  <button
+                    onClick={() => { setAuthMode('register'); setAuthMsg(''); }}
+                    className={`flex-1 py-2 text-xs font-semibold rounded-lg ${authMode === 'register' ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}
+                  >
+                    Register
+                  </button>
+                </div>
+              )}
+
+              {authMsg && (
+                <div className="mb-4 p-3 bg-rose-950/60 border border-rose-800 text-rose-300 text-xs rounded-xl">
+                  {authMsg}
+                </div>
+              )}
+
+              {step === 'input' ? (
+                <form onSubmit={handleSendOtp} className="space-y-4">
+                  {authMode === 'register' && (
+                    <div>
+                      <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Student Full Name</label>
+                      <input
+                        type="text"
+                        required
+                        value={fullName}
+                        onChange={(e) => setFullName(e.target.value)}
+                        placeholder="e.g. Rahul Sharma"
+                        className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Gmail Address</label>
+                    <input
+                      type="email"
+                      required
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="name@gmail.com"
+                      className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 font-semibold text-white rounded-xl text-sm transition shadow-lg shadow-indigo-600/30"
+                  >
+                    {loading ? 'Sending OTP...' : 'Send Verification OTP'}
+                  </button>
+                </form>
+              ) : (
+                <div>
+                  <p className="text-xs text-center text-slate-400 mb-4">Enter the 6-digit code sent to <b>{email}</b></p>
+                  
+                  <div className="flex justify-between gap-2 mb-6">
+                    {otp.map((digit, i) => (
+                      <input
+                        key={i}
+                        ref={(el) => (inputRefs.current[i] = el)}
+                        type="text"
+                        maxLength={1}
+                        value={digit}
+                        onChange={(e) => {
+                          const val = e.target.value.slice(-1);
+                          const nextOtp = [...otp];
+                          nextOtp[i] = val;
+                          setOtp(nextOtp);
+                          if (val && i < 5) inputRefs.current[i + 1]?.focus();
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Backspace' && !otp[i] && i > 0) inputRefs.current[i - 1]?.focus();
+                        }}
+                        className="w-11 h-12 text-center text-xl font-bold bg-slate-800 border border-slate-700 rounded-xl text-white focus:outline-none focus:border-indigo-500"
+                      />
+                    ))}
+                  </div>
+
+                  <button
+                    onClick={handleVerifyOtp}
+                    className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 font-semibold text-white rounded-xl text-sm transition"
+                  >
+                    Verify & Continue
+                  </button>
+
+                  <div className="text-center mt-4 text-xs text-slate-400">
+                    {canResend ? (
+                      <button onClick={handleSendOtp} className="text-indigo-400 font-bold hover:underline">
+                        Resend Code
+                      </button>
+                    ) : (
+                      <span>Resend in {timer}s</span>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* SCREEN 2: ADMIN ONLY (FILE UPLOAD SCREEN) */}
+          {view === 'admin_upload' && currentUser?.isAdmin && (
+            <div className="space-y-6">
+              <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 text-center shadow-xl">
+                <span className="text-xs font-bold text-amber-400 uppercase tracking-widest bg-amber-950/60 px-3 py-1 rounded-full border border-amber-800">
+                  Authorized Admin Portal
+                </span>
+                <h2 className="text-2xl font-bold text-white mt-3 mb-2">Upload Master Question Bank</h2>
+                <p className="text-xs text-slate-400 mb-6">
+                  Upload your Gemini-generated CSV file. It will automatically update the test and timer for every student.
+                </p>
+
+                {adminMsg && (
+                  <div className="p-3 bg-indigo-950/70 border border-indigo-700 text-indigo-300 text-xs rounded-xl mb-4 max-w-md mx-auto">
+                    {adminMsg}
+                  </div>
+                )}
+
+                <div className="border-2 border-dashed border-slate-700 hover:border-indigo-500 rounded-2xl p-8 bg-slate-950/40 cursor-pointer max-w-md mx-auto relative group">
+                  <input
+                    type="file"
+                    accept=".csv"
+                    onChange={handleAdminCSVUpload}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  />
+                  <span className="text-4xl mb-2 block">📄</span>
+                  <p className="text-sm font-semibold text-white">Click or Drag your .CSV file here</p>
+                  <p className="text-xs text-slate-500 mt-1">Saves exam bank into Supabase</p>
+                </div>
+
+                {questions.length > 0 && (
+                  <div className="mt-6">
+                    <p className="text-xs text-emerald-400 font-semibold mb-3">
+                      Current Live Test: {questions.length} Questions ({questions.length * 1.5} Mins)
+                    </p>
+                    <button
+                      onClick={() => setView('dashboard')}
+                      className="px-6 py-2.5 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-white rounded-xl border border-slate-700"
+                    >
+                      Go To Exam View & Dashboard →
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* SCREEN 3: STUDENT DASHBOARD (PAST MARKS & START EXAM) */}
+          {view === 'dashboard' && (
+            <div className="space-y-6">
+              
+              <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 text-center shadow-xl">
+                <h2 className="text-2xl font-bold text-white mb-2">Ready to Start Test?</h2>
+                <div className="flex justify-center items-center gap-4 text-xs text-slate-400 mb-6">
+                  <span>📋 {questions.length} Questions</span>
+                  <span>•</span>
+                  <span>⏱️ {questions.length * 1.5} Minutes ({questions.length * 1.5 * 60} Seconds)</span>
+                </div>
+                <button
+                  onClick={startExam}
+                  className="px-8 py-3 bg-indigo-600 hover:bg-indigo-500 font-bold text-white rounded-xl text-sm transition shadow-lg shadow-indigo-600/30"
+                >
+                  Start Exam Now →
+                </button>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+                <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400 mb-4">
+                  Your Past Test Performance ({studentScores.length} Attempts)
+                </h3>
+                {studentScores.length === 0 ? (
+                  <p className="text-xs text-slate-500">No attempts yet. Take your test above!</p>
+                ) : (
+                  <div className="divide-y divide-slate-800">
+                    {studentScores.map((row, idx) => (
+                      <div key={idx} className="py-3 flex justify-between items-center text-xs">
+                        <div>
+                          <p className="font-bold text-white">Score: {row.score} / {row.total_questions} Marks</p>
+                          <p className="text-slate-500 text-[11px]">{new Date(row.attempted_at).toLocaleString()}</p>
+                        </div>
+                        <div className="text-right">
+                          <span className={`px-2.5 py-1 rounded-full font-bold text-xs ${row.percentage >= 50 ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'}`}>
+                            {row.percentage}%
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+            </div>
+          )}
+
+          {/* SCREEN 4: EXAM ENGINE WITH TIMER */}
+          {view === 'quiz' && questions.length > 0 && (
+            <div>
+              <div className="flex justify-between items-center bg-slate-900 border border-slate-800 p-4 rounded-2xl mb-6">
+                <div>
+                  <span className="text-xs text-indigo-400 uppercase tracking-wider font-semibold">Question</span>
+                  <h2 className="text-xl font-bold text-white">{currentIndex + 1} <span className="text-slate-500 text-sm">/ {questions.length}</span></h2>
+                </div>
+
+                <div className={`flex items-center gap-2 px-4 py-2 rounded-xl border font-mono font-bold text-sm ${
+                  examTimeLeft <= 300 
+                    ? 'bg-rose-950/80 border-rose-600 text-rose-400 animate-pulse' 
+                    : examTimeLeft <= 600
+                    ? 'bg-amber-950/80 border-amber-600 text-amber-400'
+                    : 'bg-slate-800 border-slate-700 text-emerald-400'
+                }`}>
+                  <span>⏱️</span>
+                  <span>{formatTime(examTimeLeft)}</span>
+                </div>
+
+                <button
+                  onClick={() => handleFinishTest(false)}
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2 rounded-xl transition shadow-lg shadow-emerald-600/30"
+                >
+                  Submit Test & Save Marks
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="md:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-6">
+                  <p className="text-base font-semibold text-white mb-6 leading-relaxed">
+                    {questions[currentIndex].question}
+                  </p>
+
+                  <div className="space-y-3">
+                    {Object.entries(questions[currentIndex].options).map(([key, val]) => {
+                      const isSelected = userAnswers[currentIndex] === key;
+                      return (
+                        <button
+                          key={key}
+                          onClick={() => setUserAnswers({ ...userAnswers, [currentIndex]: key })}
+                          className={`w-full text-left p-3.5 rounded-xl border transition flex items-start gap-3 ${isSelected ? 'bg-indigo-600/20 border-indigo-500 text-white' : 'bg-slate-800/60 border-slate-700 text-slate-300 hover:bg-slate-800'}`}
+                        >
+                          <span className={`w-6 h-6 rounded-md flex items-center justify-center text-xs font-bold shrink-0 ${isSelected ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-300'}`}>
+                            {key}
+                          </span>
+                          <span className="text-sm mt-0.5">{val}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="flex justify-between items-center mt-6 pt-4 border-t border-slate-800">
+                    <button
+                      onClick={() => setCurrentIndex(p => Math.max(0, p - 1))}
+                      disabled={currentIndex === 0}
+                      className="px-4 py-2 bg-slate-800 disabled:opacity-30 rounded-xl text-xs font-semibold text-slate-300"
+                    >
+                      ← Previous
+                    </button>
+                    <button
+                      onClick={() => setCurrentIndex(p => Math.min(questions.length - 1, p + 1))}
+                      disabled={currentIndex === questions.length - 1}
+                      className="px-4 py-2 bg-indigo-600 disabled:opacity-30 rounded-xl text-xs font-semibold text-white"
+                    >
+                      Next →
+                    </button>
+                  </div>
+                </div>
+
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 h-fit max-h-[500px] flex flex-col">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Question Sheet</h4>
+                  <div className="grid grid-cols-5 gap-1.5 overflow-y-auto pr-1">
+                    {questions.map((_, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => setCurrentIndex(idx)}
+                        className={`h-8 rounded-lg text-xs font-bold border transition ${currentIndex === idx ? 'border-indigo-400 bg-indigo-600 text-white' : userAnswers[idx] ? 'border-emerald-600 bg-emerald-950 text-emerald-400' : 'border-slate-700 bg-slate-800 text-slate-400'}`}
+                      >
+                        {idx + 1}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* SCREEN 5: RESULTS */}
+          {view === 'result' && (
+            <div className="space-y-6">
+              <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 text-center shadow-xl">
+                <div className="text-4xl font-extrabold text-indigo-400 mb-1">
+                  {Object.keys(userAnswers).filter(i => userAnswers[i] === questions[i].answer).length} / {questions.length}
+                </div>
+                <h3 className="text-lg font-bold text-white mb-4">Marks Successfully Saved to Database!</h3>
+                <button
+                  onClick={() => setView('dashboard')}
+                  className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 rounded-xl text-xs font-bold text-white transition"
+                >
+                  Back to Dashboard
+                </button>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+                <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400 mb-4">Answer Key Review</h3>
+                <div className="space-y-3">
+                  {questions.map((q, idx) => {
+                    const picked = userAnswers[idx];
+                    const isCorrect = picked === q.answer;
+                    return (
+                      <div key={idx} className="p-3 bg-slate-950/60 border border-slate-800 rounded-xl text-xs">
+                        <p className="font-semibold text-slate-200 mb-1">{idx + 1}. {q.question}</p>
+                        <p className={isCorrect ? 'text-emerald-400 font-bold' : 'text-rose-400'}>
+                          Your answer: {picked ? `${picked}: ${q.options[picked]}` : 'Unanswered'}
+                        </p>
+                        {!isCorrect && (
+                          <p className="text-slate-400 mt-0.5">
+                            Correct: <span className="text-indigo-300 font-bold">{q.answer}</span> ({q.options[q.answer]})
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
