@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>D2D Entrance Exam Portal</title>
+  <title>D2D Entrance Exam & Rank Portal</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
@@ -20,23 +20,25 @@
     const { useState, useEffect, useRef } = React;
 
     // =========================================================================
-    // ⚙️ AUTH CONFIGURATION KEYS
+    // ⚙️ AUTH CONFIGURATION KEYS (Paste your credentials here)
     // =========================================================================
     const ADMIN_EMAIL = 'fizavaraiya@gmail.com'.toLowerCase();
     const EMAILJS_PUBLIC_KEY  = 'ia2zoR2_x3PWxqT2Q';     
     const EMAILJS_SERVICE_ID  = 'service_xo69pzg';     
     const EMAILJS_TEMPLATE_ID = 'template_5totzc2';      
-    const SUPABASE_URL = 'https://padfkukxtxvzaesvlgjx.supabase.co';     
+    const SUPABASE_URL = 'https://padfkukxtxvzaesvlgjx.supabase.co/rest/v1/';     
     const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBhZGZrdWt4dHh2emFlc3ZsZ2p4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg3NzQ4MzUsImV4cCI6MjEwNDM1MDgzNX0._LOh3gQV5MjikHDsZ2kLfFXpNASJZWIRn5w24OkTiQI';    
   
     // =========================================================================
 
-    const supabase = (SUPABASE_URL && SUPABASE_URL.startsWith('http')) 
-      ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) 
+    const cleanUrl = SUPABASE_URL.trim().replace(/\/+$/, '');
+    const supabase = (cleanUrl.startsWith('http')) 
+      ? window.supabase.createClient(cleanUrl, SUPABASE_ANON_KEY.trim()) 
       : null;
 
     function App() {
       const [view, setView] = useState('auth'); // 'auth' | 'admin_upload' | 'dashboard' | 'quiz' | 'result'
+      const [activeTab, setActiveTab] = useState('tests'); // 'tests' | 'leaderboard'
       const [authMode, setAuthMode] = useState('login'); 
       const [step, setStep] = useState('input'); 
       const [fullName, setFullName] = useState('');
@@ -49,11 +51,11 @@
       const [authMsg, setAuthMsg] = useState('');
       const [loading, setLoading] = useState(false);
 
-      // Questions are completely empty by default — fetched strictly from Supabase
       const [questions, setQuestions] = useState([]);
       const [currentIndex, setCurrentIndex] = useState(0);
       const [userAnswers, setUserAnswers] = useState({});
       const [studentScores, setStudentScores] = useState([]);
+      const [leaderboardData, setLeaderboardData] = useState([]);
       const [adminMsg, setAdminMsg] = useState('');
       const [examTimeLeft, setExamTimeLeft] = useState(0);
 
@@ -61,7 +63,6 @@
       const userAnswersRef = useRef(userAnswers);
       userAnswersRef.current = userAnswers;
 
-      // OTP Countdown
       useEffect(() => {
         let interval = null;
         if (step === 'otp' && timer > 0) {
@@ -72,7 +73,6 @@
         return () => clearInterval(interval);
       }, [step, timer]);
 
-      // Exam Timer Countdown
       useEffect(() => {
         let interval = null;
         if (view === 'quiz' && examTimeLeft > 0) {
@@ -98,16 +98,10 @@
         return hrs > 0 ? `${pad(hrs)}:${pad(mins)}:${pad(secs)}` : `${pad(mins)}:${pad(secs)}`;
       };
 
-      // Pulls active exam directly from Supabase
       const fetchQuestionsFromDB = async () => {
         if (!supabase) return [];
-        const { data, error } = await supabase
-          .from('active_quiz')
-          .select('*')
-          .order('id', { ascending: true });
-
+        const { data, error } = await supabase.from('active_quiz').select('*').order('id', { ascending: true });
         if (error || !data || data.length === 0) return [];
-
         return data.map((row, idx) => ({
           id: idx + 1,
           question: row.question,
@@ -125,6 +119,17 @@
           .order('attempted_at', { ascending: false });
 
         if (!error && data) setStudentScores(data);
+      };
+
+      const loadLeaderboard = async () => {
+        if (!supabase) return;
+        const { data, error } = await supabase
+          .from('leaderboard')
+          .select('*')
+          .order('rank', { ascending: true })
+          .limit(50);
+
+        if (!error && data) setLeaderboardData(data);
       };
 
       const handleSendOtp = async (e) => {
@@ -200,8 +205,8 @@
 
         setCurrentUser(loggedInUser);
         await loadStudentHistory(cleanEmail);
+        await loadLeaderboard();
 
-        // Routing: Admin lands on Upload page; Students fetch test and go to Dashboard
         if (loggedInUser.isAdmin) {
           const loaded = await fetchQuestionsFromDB();
           setQuestions(loaded);
@@ -212,7 +217,7 @@
           setLoading(false);
 
           if (loaded.length === 0) {
-            setAuthMsg('No examination has been published yet. Please contact your instructor.');
+            setAuthMsg('No examination published yet. Contact admin.');
             return;
           }
           setQuestions(loaded);
@@ -220,12 +225,11 @@
         }
       };
 
-      // Admin CSV file upload straight into Supabase
       const handleAdminCSVUpload = (e) => {
         const file = e.target.files[0];
         if (!file) return;
 
-        setAdminMsg('Reading and syncing CSV with Supabase...');
+        setAdminMsg('Uploading questions to Supabase...');
 
         Papa.parse(file, {
           header: true,
@@ -262,22 +266,21 @@
             });
 
             if (rowsToInsert.length === 0) {
-              setAdminMsg('Error: Invalid CSV format. Make sure headers are Question, Option A, Option B, Option C, Option D, Answer');
+              setAdminMsg('Error: Invalid CSV format.');
               return;
             }
 
             if (supabase) {
-              // Delete old test and insert new test
               await supabase.from('active_quiz').delete().neq('id', 0);
               const { error } = await supabase.from('active_quiz').insert(rowsToInsert);
               if (error) {
-                setAdminMsg('Supabase upload failed: ' + error.message);
+                setAdminMsg('Upload failed: ' + error.message);
                 return;
               }
             }
 
             setQuestions(parsedList);
-            setAdminMsg(`Success! Published ${parsedList.length} questions to database. Timer set to ${parsedList.length * 1.5} minutes.`);
+            setAdminMsg(`Success! Published ${parsedList.length} questions for ALL students.`);
           }
         });
       };
@@ -308,13 +311,14 @@
               percentage: percentage
             }]);
             await loadStudentHistory(currentUser.email);
+            await loadLeaderboard();
           } catch (err) {
             console.error(err);
           }
         }
 
         if (isAutoSubmit) {
-          alert("Time's up! Your exam has been automatically submitted.");
+          alert("Time's up! Exam submitted automatically.");
         }
 
         setView('result');
@@ -326,7 +330,7 @@
           {currentUser && (
             <div className="flex justify-between items-center bg-slate-900 border border-slate-800 p-4 rounded-2xl mb-6">
               <div>
-                <p className="text-xs text-slate-400">{currentUser.isAdmin ? '👑 Authorized Instructor' : '🎓 Student'}</p>
+                <p className="text-xs text-slate-400">{currentUser.isAdmin ? '👑 Authorized Admin' : '🎓 Student'}</p>
                 <p className="text-sm font-bold text-white">{currentUser.name} <span className="text-xs text-indigo-400 font-mono">({currentUser.email})</span></p>
               </div>
               <div className="flex gap-2">
@@ -348,15 +352,15 @@
             </div>
           )}
 
-          {/* SCREEN 1: LOGIN / REGISTER VIA OTP */}
+          {/* SCREEN 1: LOGIN / OTP */}
           {view === 'auth' && (
             <div className="max-w-md mx-auto w-full bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-2xl">
               <div className="text-center mb-6">
                 <div className="w-12 h-12 bg-indigo-600 rounded-xl flex items-center justify-center mx-auto text-2xl mb-2 font-bold">
                   🎓
                 </div>
-                <h2 className="text-2xl font-bold text-white">D2D Exam Portal</h2>
-                <p className="text-xs text-slate-400 mt-1">Student & Admin Access via Email OTP</p>
+                <h2 className="text-2xl font-bold text-white">D2D Exam & Rank Portal</h2>
+                <p className="text-xs text-slate-400 mt-1">Student Access & Statewide Rankings</p>
               </div>
 
               {step === 'input' && (
@@ -466,7 +470,7 @@
             </div>
           )}
 
-          {/* SCREEN 2: ADMIN ONLY (FILE UPLOAD SCREEN) */}
+          {/* SCREEN 2: ADMIN UPLOAD */}
           {view === 'admin_upload' && currentUser?.isAdmin && (
             <div className="space-y-6">
               <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 text-center shadow-xl">
@@ -474,9 +478,7 @@
                   Authorized Admin Portal
                 </span>
                 <h2 className="text-2xl font-bold text-white mt-3 mb-2">Upload Master Question Bank</h2>
-                <p className="text-xs text-slate-400 mb-6">
-                  Upload your Gemini-generated CSV file. It will automatically update the test and timer for every student.
-                </p>
+                <p className="text-xs text-slate-400 mb-6">Upload CSV to sync with Supabase and all active students.</p>
 
                 {adminMsg && (
                   <div className="p-3 bg-indigo-950/70 border border-indigo-700 text-indigo-300 text-xs rounded-xl mb-4 max-w-md mx-auto">
@@ -505,7 +507,7 @@
                       onClick={() => setView('dashboard')}
                       className="px-6 py-2.5 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-white rounded-xl border border-slate-700"
                     >
-                      Go To Exam View & Dashboard →
+                      Go To Exam View & Leaderboard →
                     </button>
                   </div>
                 )}
@@ -513,49 +515,136 @@
             </div>
           )}
 
-          {/* SCREEN 3: STUDENT DASHBOARD (PAST MARKS & START EXAM) */}
+          {/* SCREEN 3: DASHBOARD & LIVE LEADERBOARD */}
           {view === 'dashboard' && (
             <div className="space-y-6">
               
-              <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 text-center shadow-xl">
-                <h2 className="text-2xl font-bold text-white mb-2">Ready to Start Test?</h2>
-                <div className="flex justify-center items-center gap-4 text-xs text-slate-400 mb-6">
-                  <span>📋 {questions.length} Questions</span>
-                  <span>•</span>
-                  <span>⏱️ {questions.length * 1.5} Minutes ({questions.length * 1.5 * 60} Seconds)</span>
-                </div>
+              {/* Tab Navigation: Tests vs Leaderboard */}
+              <div className="flex bg-slate-900 border border-slate-800 p-1.5 rounded-2xl max-w-md mx-auto">
                 <button
-                  onClick={startExam}
-                  className="px-8 py-3 bg-indigo-600 hover:bg-indigo-500 font-bold text-white rounded-xl text-sm transition shadow-lg shadow-indigo-600/30"
+                  onClick={() => setActiveTab('tests')}
+                  className={`flex-1 py-2 rounded-xl text-xs font-bold transition ${activeTab === 'tests' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}
                 >
-                  Start Exam Now →
+                  📝 Mock Tests
+                </button>
+                <button
+                  onClick={() => { setActiveTab('leaderboard'); loadLeaderboard(); }}
+                  className={`flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${activeTab === 'leaderboard' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}
+                >
+                  🏆 Live Rankings
                 </button>
               </div>
 
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-                <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400 mb-4">
-                  Your Past Test Performance ({studentScores.length} Attempts)
-                </h3>
-                {studentScores.length === 0 ? (
-                  <p className="text-xs text-slate-500">No attempts yet. Take your test above!</p>
-                ) : (
-                  <div className="divide-y divide-slate-800">
-                    {studentScores.map((row, idx) => (
-                      <div key={idx} className="py-3 flex justify-between items-center text-xs">
-                        <div>
-                          <p className="font-bold text-white">Score: {row.score} / {row.total_questions} Marks</p>
-                          <p className="text-slate-500 text-[11px]">{new Date(row.attempted_at).toLocaleString()}</p>
-                        </div>
-                        <div className="text-right">
-                          <span className={`px-2.5 py-1 rounded-full font-bold text-xs ${row.percentage >= 50 ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'}`}>
-                            {row.percentage}%
-                          </span>
-                        </div>
-                      </div>
-                    ))}
+              {/* TAB 1: TESTS */}
+              {activeTab === 'tests' && (
+                <div className="space-y-6">
+                  <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 text-center shadow-xl">
+                    <h2 className="text-2xl font-bold text-white mb-2">Ready to Start Test?</h2>
+                    <div className="flex justify-center items-center gap-4 text-xs text-slate-400 mb-6">
+                      <span>📋 {questions.length} Questions</span>
+                      <span>•</span>
+                      <span>⏱️ {questions.length * 1.5} Minutes</span>
+                    </div>
+                    <button
+                      onClick={startExam}
+                      className="px-8 py-3 bg-indigo-600 hover:bg-indigo-500 font-bold text-white rounded-xl text-sm transition shadow-lg shadow-indigo-600/30"
+                    >
+                      Start Exam Now →
+                    </button>
                   </div>
-                )}
-              </div>
+
+                  <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+                    <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400 mb-4">
+                      Your Past Attempts ({studentScores.length})
+                    </h3>
+                    {studentScores.length === 0 ? (
+                      <p className="text-xs text-slate-500">No attempts yet. Take your test above!</p>
+                    ) : (
+                      <div className="divide-y divide-slate-800">
+                        {studentScores.map((row, idx) => (
+                          <div key={idx} className="py-3 flex justify-between items-center text-xs">
+                            <div>
+                              <p className="font-bold text-white">Score: {row.score} / {row.total_questions} Marks</p>
+                              <p className="text-slate-500 text-[11px]">{new Date(row.attempted_at).toLocaleString()}</p>
+                            </div>
+                            <span className={`px-2.5 py-1 rounded-full font-bold text-xs ${row.percentage >= 50 ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'}`}>
+                              {row.percentage}%
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 2: LIVE LEADERBOARD */}
+              {activeTab === 'leaderboard' && (
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
+                  <div className="flex justify-between items-center mb-6">
+                    <div>
+                      <h3 className="text-base font-bold text-white">🏆 Statewide Entrance Rankings</h3>
+                      <p className="text-xs text-slate-400">Live leaderboard updated from Supabase</p>
+                    </div>
+                    <button
+                      onClick={loadLeaderboard}
+                      className="text-xs bg-slate-800 hover:bg-slate-700 text-indigo-400 px-3 py-1.5 rounded-lg border border-slate-700"
+                    >
+                      🔄 Refresh Ranks
+                    </button>
+                  </div>
+
+                  {leaderboardData.length === 0 ? (
+                    <p className="text-xs text-slate-500 text-center py-6">No test scores recorded yet. Be the first to take the test!</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-slate-400 font-semibold uppercase tracking-wider">
+                            <th className="pb-3 pl-2">Rank</th>
+                            <th className="pb-3">Candidate</th>
+                            <th className="pb-3 text-center">Score</th>
+                            <th className="pb-3 text-right pr-2">Percentage</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60">
+                          {leaderboardData.map((row, idx) => {
+                            const isMe = row.student_email === currentUser?.email;
+                            return (
+                              <tr 
+                                key={idx} 
+                                className={`transition ${isMe ? 'bg-indigo-950/40 font-bold text-indigo-200' : 'hover:bg-slate-800/30 text-slate-300'}`}
+                              >
+                                <td className="py-3.5 pl-2 font-bold">
+                                  {row.rank === 1 ? '🥇 1' : row.rank === 2 ? '🥈 2' : row.rank === 3 ? '🥉 3' : `#${row.rank}`}
+                                </td>
+                                <td className="py-3.5">
+                                  <div className="flex items-center gap-2">
+                                    <span>{row.full_name || row.student_email.split('@')[0]}</span>
+                                    {isMe && (
+                                      <span className="text-[10px] bg-indigo-600 text-white px-1.5 py-0.5 rounded-md font-bold">
+                                        YOU
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="py-3.5 text-center font-mono">
+                                  {row.score} / {row.total_questions}
+                                </td>
+                                <td className="py-3.5 text-right pr-2">
+                                  <span className={`px-2 py-0.5 rounded-md font-mono font-bold ${row.percentage >= 50 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {row.percentage}%
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
 
             </div>
           )}
@@ -655,12 +744,12 @@
                 <div className="text-4xl font-extrabold text-indigo-400 mb-1">
                   {Object.keys(userAnswers).filter(i => userAnswers[i] === questions[i].answer).length} / {questions.length}
                 </div>
-                <h3 className="text-lg font-bold text-white mb-4">Marks Successfully Saved to Database!</h3>
+                <h3 className="text-lg font-bold text-white mb-4">Marks Successfully Saved!</h3>
                 <button
-                  onClick={() => setView('dashboard')}
+                  onClick={() => { setView('dashboard'); setActiveTab('leaderboard'); }}
                   className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 rounded-xl text-xs font-bold text-white transition"
                 >
-                  Back to Dashboard
+                  View Your Live State Rank →
                 </button>
               </div>
 
