@@ -11,11 +11,18 @@
   <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- KaTeX for Beautiful Textbook Math Equations -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com">
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     body { font-family: 'Plus Jakarta Sans', sans-serif; }
+    .katex { font-size: 1.05em; }
   </style>
 </head>
 <body class="bg-slate-50 text-slate-800 antialiased min-h-screen selection:bg-indigo-500 selection:text-white">
@@ -34,12 +41,33 @@
     const EMAILJS_TEMPLATE_ID = 'template_5totzc2';      
     const SUPABASE_URL = 'https://padfkukxtxvzaesvlgjx.supabase.co';     
     const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBhZGZrdWt4dHh2emFlc3ZsZ2p4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg3NzQ4MzUsImV4cCI6MjEwNDM1MDgzNX0._LOh3gQV5MjikHDsZ2kLfFXpNASJZWIRn5w24OkTiQI';    
-  // =========================================================================
+   // =========================================================================
 
     const cleanUrl = SUPABASE_URL.trim().replace(/\/+$/, '');
     const supabase = (cleanUrl.startsWith('http')) 
       ? window.supabase.createClient(cleanUrl, SUPABASE_ANON_KEY.trim()) 
       : null;
+
+    // LaTeX Math Renderer Component
+    function MathRenderer({ text }) {
+      const elRef = useRef(null);
+
+      useEffect(() => {
+        if (elRef.current && window.renderMathInElement) {
+          window.renderMathInElement(elRef.current, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '$', right: '$', display: false },
+              { left: '\\(', right: '\\)', display: false },
+              { left: '\\[', right: '\\]', display: true }
+            ],
+            throwOnError: false
+          });
+        }
+      }, [text]);
+
+      return <span ref={elRef}>{text}</span>;
+    }
 
     function App() {
       const savedUser = JSON.parse(localStorage.getItem('d2d_portal_user') || 'null');
@@ -316,88 +344,89 @@
         setActiveTab(loggedInUser.isAdmin ? 'admin' : 'dashboard');
       };
 
-      // Tolerant Text/CSV Parser supporting Direct Paste and File Uploads
+      // Resilient Dual-Mode Parser (Header + Positional Fallback)
       const processQuestionText = async (rawContent) => {
-        setAdminMsg('Parsing questions...');
+        setAdminMsg('Analyzing and uploading questions...');
 
-        // Strip UTF-8 BOM if present
-        let cleanContent = rawContent.replace(/^\uFEFF/, '').trim();
+        let cleanContent = String(rawContent || '')
+          .replace(/^\uFEFF/, '')
+          .trim();
 
-        // Strip potential markdown code fences if user copied ```csv ... ``` directly
         if (cleanContent.startsWith('```')) {
           cleanContent = cleanContent.replace(/^```[a-zA-Z]*\n?/, '').replace(/```$/, '').trim();
         }
 
-        Papa.parse(cleanContent, {
-          header: true,
-          skipEmptyLines: 'greedy',
-          transformHeader: (h) => h.trim().toLowerCase().replace(/['"]+/g, ''),
-          complete: async (results) => {
-            const rowsToInsert = [];
-            const parsedList = [];
+        const parsedFirstPass = Papa.parse(cleanContent, {
+          skipEmptyLines: 'greedy'
+        });
 
-            results.data.forEach((row, i) => {
-              const keys = Object.keys(row);
-              const qKey = keys.find(k => k.includes('question') || k === 'q');
-              const aKey = keys.find(k => k.includes('option a') || k.includes('option_a') || k === 'a');
-              const bKey = keys.find(k => k.includes('option b') || k.includes('option_b') || k === 'b');
-              const cKey = keys.find(k => k.includes('option c') || k.includes('option_c') || k === 'c');
-              const dKey = keys.find(k => k.includes('option d') || k.includes('option_d') || k === 'd');
-              const ansKey = keys.find(k => k.includes('answer') || k.includes('ans') || k === 'correct');
+        const rawRows = parsedFirstPass.data || [];
+        if (rawRows.length === 0) {
+          setAdminMsg('Error: Provided input is empty.');
+          return;
+        }
 
-              const q = row[qKey];
-              const a = row[aKey];
-              const b = row[bKey];
-              const c = row[cKey];
-              const d = row[dKey];
-              const ans = String(row[ansKey] || '').trim();
+        let rowsToInsert = [];
+        let parsedList = [];
 
-              if (q && a && b && c && d && ans) {
-                const formattedAns = ans.toUpperCase().replace('OPTION ', '').trim().charAt(0);
-                const qObj = {
-                  id: i + 1,
-                  question: String(q).trim(),
-                  options: { A: String(a).trim(), B: String(b).trim(), C: String(c).trim(), D: String(d).trim() },
-                  answer: formattedAns
-                };
-                parsedList.push(qObj);
-                rowsToInsert.push({
-                  question: String(q).trim(),
-                  option_a: String(a).trim(),
-                  option_b: String(b).trim(),
-                  option_c: String(c).trim(),
-                  option_d: String(d).trim(),
-                  answer: formattedAns
-                });
-              }
+        // Check if Row 0 contains headers
+        const firstRowText = rawRows[0].join(' ').toLowerCase();
+        const hasHeader = firstRowText.includes('question') || firstRowText.includes('option');
+        const dataRows = hasHeader ? rawRows.slice(1) : rawRows;
+
+        dataRows.forEach((cols) => {
+          if (!Array.isArray(cols) || cols.length < 5) return;
+
+          const q = cols[0] ? String(cols[0]).trim() : '';
+          const a = cols[1] ? String(cols[1]).trim() : '';
+          const b = cols[2] ? String(cols[2]).trim() : '';
+          const c = cols[3] ? String(cols[3]).trim() : '';
+          const d = cols[4] ? String(cols[4]).trim() : '';
+          let ans = cols[5] ? String(cols[5]).trim() : 'A';
+
+          ans = ans.toUpperCase().replace(/[^A-D]/g, '').charAt(0) || 'A';
+
+          if (q && a && b) {
+            const qItem = {
+              id: parsedList.length + 1,
+              question: q,
+              options: { A: a, B: b, C: c || 'None of these', D: d || 'All of these' },
+              answer: ans
+            };
+            parsedList.push(qItem);
+            rowsToInsert.push({
+              question: q,
+              option_a: a,
+              option_b: b,
+              option_c: c || 'None of these',
+              option_d: d || 'All of these',
+              answer: ans
             });
-
-            if (rowsToInsert.length === 0) {
-              setAdminMsg('Error: No valid rows detected. Ensure row 1 is: Question,Option A,Option B,Option C,Option D,Answer');
-              return;
-            }
-
-            if (supabase) {
-              await supabase.from('active_quiz').delete().neq('id', 0);
-              const { error } = await supabase.from('active_quiz').insert(rowsToInsert);
-              if (error) {
-                setAdminMsg('Database upload error: ' + error.message);
-                return;
-              }
-            }
-
-            setQuestions(parsedList);
-            setAdminMsg(`Success! Published ${parsedList.length} questions for ALL students.`);
-          },
-          error: (err) => {
-            setAdminMsg('Parse error: ' + err.message);
           }
         });
+
+        if (rowsToInsert.length === 0) {
+          setAdminMsg('Error: Could not extract questions. Please check that options are separated by commas.');
+          return;
+        }
+
+        if (supabase) {
+          await supabase.from('active_quiz').delete().neq('id', 0);
+          const { error } = await supabase.from('active_quiz').insert(rowsToInsert);
+          if (error) {
+            setAdminMsg('Database upload error: ' + error.message);
+            return;
+          }
+        }
+
+        setQuestions(parsedList);
+        setAdminMsg(`Success! Published ${parsedList.length} questions for ALL students.`);
       };
 
       const handleAdminCSVUpload = (e) => {
         const file = e.target.files[0];
         if (!file) return;
+        setAdminMsg('');
         const reader = new FileReader();
         reader.onload = (event) => processQuestionText(event.target.result);
         reader.readAsText(file);
@@ -1003,7 +1032,7 @@
                   </div>
                 )}
 
-                {/* ADMIN QUESTION MANAGEMENT TAB WITH DIRECT PASTE */}
+                {/* ADMIN QUESTION MANAGEMENT TAB */}
                 {activeTab === 'admin' && currentUser.isAdmin && (
                   <div className="space-y-6 max-w-2xl mx-auto">
                     <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 text-center shadow-sm">
@@ -1011,7 +1040,7 @@
                         👑 Portal Administrator
                       </span>
                       <h2 className="text-xl font-bold text-slate-900 mt-3 mb-1">Publish Question Bank</h2>
-                      <p className="text-xs text-slate-500 mb-6">Upload a .CSV file or paste the raw CSV text directly below.</p>
+                      <p className="text-xs text-slate-500 mb-6">Paste the raw CSV text directly below or upload your file.</p>
 
                       {adminMsg && (
                         <div className={`p-3 border text-xs rounded-xl mb-4 font-semibold ${adminMsg.startsWith('Success') ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-rose-50 border-rose-200 text-rose-700'}`}>
@@ -1019,20 +1048,20 @@
                         </div>
                       )}
 
-                      {/* Direct Paste Box (Mobile Friendly) */}
+                      {/* Direct Paste Box (Recommended for Phone) */}
                       <div className="text-left mb-4">
-                        <label className="block text-xs font-bold uppercase text-slate-500 mb-1.5">Direct Paste (Mobile Recommended)</label>
+                        <label className="block text-xs font-bold uppercase text-slate-500 mb-1.5">Direct Paste (No File Needed)</label>
                         <textarea
                           id="rawCsvInput"
                           rows={6}
-                          placeholder="Paste the raw CSV text here directly from Gemini..."
+                          placeholder="Paste all questions here directly from Gemini..."
                           className="w-full bg-slate-50 border border-slate-200 rounded-2xl p-3.5 text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                         ></textarea>
                         <button
                           onClick={() => {
                             const text = document.getElementById('rawCsvInput').value;
                             if (!text.trim()) {
-                              setAdminMsg('Please paste the CSV text first.');
+                              setAdminMsg('Please paste your questions first.');
                               return;
                             }
                             processQuestionText(text);
@@ -1045,7 +1074,7 @@
 
                       <div className="relative flex py-2 items-center">
                         <div className="flex-grow border-t border-slate-200"></div>
-                        <span className="flex-shrink mx-3 text-[11px] font-bold text-slate-400 uppercase">Or Choose File</span>
+                        <span className="flex-shrink mx-3 text-[11px] font-bold text-slate-400 uppercase">Or Select File</span>
                         <div className="flex-grow border-t border-slate-200"></div>
                       </div>
 
@@ -1063,7 +1092,7 @@
 
                       {questions.length > 0 && (
                         <p className="text-xs text-emerald-600 font-bold mt-4">
-                          ✓ Active Question Pool: {questions.length} Questions Loaded
+                          ✓ Active Question Pool: {questions.length} Items Loaded
                         </p>
                       )}
                     </div>
@@ -1138,9 +1167,9 @@
                       </span>
                     </div>
 
-                    <p className="text-base sm:text-lg font-medium text-slate-900 mb-6 leading-relaxed">
-                      {questions[currentIndex].question}
-                    </p>
+                    <div className="text-base sm:text-lg font-medium text-slate-900 mb-6 leading-relaxed">
+                      <MathRenderer text={questions[currentIndex].question} />
+                    </div>
 
                     <div className="space-y-3">
                       {Object.entries(questions[currentIndex].options).map(([key, val]) => {
@@ -1160,7 +1189,9 @@
                             }`}>
                               {key}
                             </span>
-                            <span className="text-sm mt-1">{val}</span>
+                            <span className="text-sm mt-1">
+                              <MathRenderer text={val} />
+                            </span>
                           </button>
                         );
                       })}
@@ -1317,13 +1348,15 @@
                     const isCorrect = picked === q.answer;
                     return (
                       <div key={idx} className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-xs">
-                        <p className="font-semibold text-slate-800 mb-1">{idx + 1}. {q.question}</p>
+                        <div className="font-semibold text-slate-800 mb-1">
+                          {idx + 1}. <MathRenderer text={q.question} />
+                        </div>
                         <p className={isCorrect ? 'text-emerald-600 font-bold' : 'text-rose-600 font-medium'}>
-                          Your Choice: {picked ? `${picked}: ${q.options[picked]}` : 'Unattempted'}
+                          Your Choice: {picked ? <span>{picked}: <MathRenderer text={q.options[picked]} /></span> : 'Unattempted'}
                         </p>
                         {!isCorrect && (
                           <p className="text-slate-500 mt-0.5 font-medium">
-                            Correct Answer: <span className="text-indigo-600 font-bold">{q.answer}</span> ({q.options[q.answer]})
+                            Correct Answer: <span className="text-indigo-600 font-bold">{q.answer}</span> (<MathRenderer text={q.options[q.answer]} />)
                           </p>
                         )}
                       </div>
